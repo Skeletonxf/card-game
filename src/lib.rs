@@ -4,7 +4,7 @@ mod state;
 
 #[cfg(test)]
 mod tests {
-    use crate::card_type::{CardType, OnSummon};
+    use crate::card_type::{CardType, OnSummon, DestroySelfUnless, NamedCardOnField};
     use crate::cards::Cards;
     use crate::state::{Action, Card, CardInstance, CardStatus, GameState};
 
@@ -20,7 +20,14 @@ mod tests {
         let card = CardType {
             id: 0,
             name: "Staple Dragon".to_owned(),
-            effects: vec![Box::new(OnSummon {})],
+            effects: vec![Box::new(OnSummon {
+                mandatory: false,
+                trigger: Box::new(DestroySelfUnless {
+                    condition: Box::new(NamedCardOnField {
+                        name: "Dragonification".to_owned(),
+                    })
+                })
+            })],
             defense: 5,
             attack: 6,
         };

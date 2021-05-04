@@ -3,3 +3,9 @@ defense = 5
 attack = 6
 [[effects]]
 type = "OnSummon"
+mandatory = true
+[effects.trigger]
+	type = "DestroySelfUnless"
+	[effects.trigger.condition]
+		type = "NamedCardOnField"
+		name = "Dragonification"
