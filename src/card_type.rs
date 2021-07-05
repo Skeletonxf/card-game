@@ -1,5 +1,5 @@
 use crate::cards::Cards;
-use crate::state::{ActivationStatus, GameState, CardInstance, CardStatus};
+use crate::state::{Action, ActivationStatus, GameState, CardInstance, CardStatus};
 
 use std::fmt;
 use std::fmt::Debug;
@@ -24,8 +24,11 @@ pub struct CardType {
 
 #[typetag::serde(tag = "type")]
 pub trait CardEffect: Send + Sync + fmt::Debug {
-    /// How can this card type out of the card pool activate in this game state for this card instance in the game state?
+    /// How can this card type effect out of the card pool activate in this game state for this card instance in the game state?
     fn can_activate(&self, card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance) -> ActivationStatus;
+
+    /// Try to activate this card type effect out of the card pool in this game state for this card instance in the game state
+    fn activate(&self, card_pool: &Cards, card_type: &CardType, game_state: &mut GameState, instance: CardInstance);
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -49,12 +52,20 @@ impl CardEffect for OnSummon {
             ActivationStatus::Cannot
         }
     }
+
+    fn activate(&self, card_pool: &Cards, card_type: &CardType, game_state: &mut GameState, instance: CardInstance) {
+        if self.can_activate(card_pool, card_type, game_state, instance).possible() {
+            // TODO: Activation and Resolution step
+            self.trigger.activation(card_pool, card_type, game_state, instance);
+            self.trigger.resolution(card_pool, card_type, game_state, instance);
+        }
+    }
 }
 
 #[typetag::serde(tag = "type")]
 pub trait EffectTrigger: Send + Sync + fmt::Debug {
-    fn activation(&self, card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance);
-    fn resolution(&self, card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance);
+    fn activation(&self, card_pool: &Cards, card_type: &CardType, game_state: &mut GameState, instance: CardInstance);
+    fn resolution(&self, card_pool: &Cards, card_type: &CardType, game_state: &mut GameState, instance: CardInstance);
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -64,9 +75,13 @@ pub struct DestroySelfUnless {
 
 #[typetag::serde]
 impl EffectTrigger for DestroySelfUnless {
-    fn activation(&self, card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance) {}
-    fn resolution(&self, card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance) {
-        let fire = self.condition.met(card_pool, card_type, game_state, instance);
+    fn activation(&self, _card_pool: &Cards, _card_type: &CardType, _game_state: &mut GameState, _instance: CardInstance) {}
+    fn resolution(&self, card_pool: &Cards, card_type: &CardType, game_state: &mut GameState, instance: CardInstance) {
+        if !self.condition.met(card_pool, card_type, game_state, instance) {
+            // swallow error, we don't care if the instance is actually on the field, just that
+            // it gets destroyed if it is
+            let _ = game_state.take_action(card_pool, Action::DestroyOnField(instance));
+        }
     }
 }
 

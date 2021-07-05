@@ -21,6 +21,12 @@ pub enum ActivationStatus {
     Mandatory,
 }
 
+impl ActivationStatus {
+    pub fn possible(&self) -> bool {
+        self != &ActivationStatus::Cannot
+    }
+}
+
 #[derive(Debug)]
 pub struct Card {
     pub card_type: CardTypeIdentifier,
@@ -37,7 +43,7 @@ impl Card {
         self.lookup_self(card_pool).name == name
     }
 
-    fn lookup_self<'a>(&self, card_pool: &'a Cards) -> &'a CardType {
+    pub fn lookup_self<'a>(&self, card_pool: &'a Cards) -> &'a CardType {
         card_pool
             .card(self.card_type)
             .expect("CardType lookup should always succeed since we create card instances from the card pool")
@@ -73,18 +79,22 @@ pub struct CardInstance(pub u32);
 
 /// The ith card effect a CardType may have
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct CardEffectIdentifier(pub u32);
+pub struct CardEffect(pub u32);
 
-impl From<usize> for CardEffectIdentifier {
+impl From<usize> for CardEffect {
     fn from(index: usize) -> Self {
-        CardEffectIdentifier(index as u32)
+        CardEffect(index as u32)
     }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Action {
+    /// Summon a card from the hand onto the next available slot on the field.
     SummonFromHand(CardInstance),
-    ActivateFromField(CardInstance, CardEffectIdentifier),
+    /// Activate an effect of a card already on the field.
+    ActivateFromField(CardInstance, CardEffect),
+    /// Destroy a card, moving it from the field to the graveyard, retaining its column from the field.
+    DestroyOnField(CardInstance),
 }
 #[derive(Debug, Clone)]
 struct InvalidAction;
@@ -159,7 +169,51 @@ impl GameState {
                     }
                 }
             }
-            _ => (),
+            Action::ActivateFromField(instance, effect) => {
+                match self
+                    .field
+                    .iter()
+                    .find(|(_, card)| card.instance == instance)
+                    .map(|(i, _)| i)
+                    .cloned()
+                {
+                    Some(index) => {
+                        let card = self.field.get(&index).expect("card always present");
+                        let card_type = card.lookup_self(card_pool);
+                        match card_type.effects.get(effect.0 as usize) {
+                            Some(effect_type) => {
+                                if effect_type.can_activate(card_pool, card_type, self, instance).possible() {
+                                    effect_type.activate(card_pool, card_type, self, instance);
+                                } else {
+                                    return Err(Box::new(InvalidAction));
+                                }
+                            }
+                            None => return Err(Box::new(InvalidAction)),
+                        }
+                    }
+                    None => return Err(Box::new(InvalidAction)),
+                }
+            }
+            Action::DestroyOnField(instance) => {
+                match self
+                    .field
+                    .iter()
+                    .find(|(_, card)| card.instance == instance)
+                    .map(|(i, _)| i)
+                    .cloned()
+                {
+                    Some(index) => {
+                        let mut card = self.field.remove(&index).expect("card always present");
+                        card.state = CardStatus::Destroyed;
+                        self
+                            .graveyard
+                            .entry(index)
+                            .or_insert_with(|| Vec::with_capacity(1))
+                            .push(card);
+                    }
+                    None => return Err(Box::new(InvalidAction)),
+                }
+            }
         }
         Ok(())
     }

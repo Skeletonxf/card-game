@@ -5,7 +5,7 @@ mod state;
 #[cfg(test)]
 mod tests {
     use crate::cards::Cards;
-    use crate::state::{Action, Card, CardInstance, CardStatus, GameState};
+    use crate::state::{Action, Card, CardInstance, CardEffect, CardStatus, GameState};
 
     #[test]
     fn reading_cards() {
@@ -31,7 +31,6 @@ mod tests {
                     name = "Dragonification"
         "#,
         ]).expect("Parsing card types should not fail");
-
         let mut player = GameState {
             hand: vec![Card {
                 card_type: card_pool.card("Staple Dragon").unwrap().id,
@@ -40,20 +39,32 @@ mod tests {
             }],
             ..Default::default()
         };
+        let instance = CardInstance(0);
         let actions = player.actions(&card_pool);
         assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0], Action::SummonFromHand(CardInstance(0)));
+        assert_eq!(actions[0], Action::SummonFromHand(instance));
         let result = player.take_action(&card_pool, actions[0]);
         assert!(result.is_ok());
         assert!(player
             .field
             .values()
-            .any(|card| card.instance == CardInstance(0)));
+            .any(|card| card.instance == instance));
         assert!(!player
             .hand
             .iter()
-            .any(|card| card.instance == CardInstance(0)));
+            .any(|card| card.instance == instance));
         let actions = player.actions(&card_pool);
-        println!("Actions: {:?}", actions);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0], Action::ActivateFromField(instance, CardEffect(0)));
+        let result = player.take_action(&card_pool, actions[0]);
+        assert!(result.is_ok());
+        assert!(!player
+            .field
+            .values()
+            .any(|card| card.instance == instance));
+        assert!(player
+            .graveyard
+            .values()
+            .any(|cards| cards.iter().any(|card| card.instance == instance)));
     }
 }
