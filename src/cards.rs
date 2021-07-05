@@ -1,4 +1,4 @@
-use crate::card_type::CardType;
+use crate::card_type::{CardType, CardTypeIdentifier};
 
 use once_cell::sync::Lazy;
 use std::fs;
@@ -25,7 +25,10 @@ impl Cards {
             if path.is_file() {
                 let str = String::from_utf8(fs::read(path)?)?;
                 let mut parsed: CardType = toml::from_str(&str)?;
-                parsed.id = id;
+                // Here we maintain the invariant that the position of a CardType in our cards Vec
+                // is also the CardTypeIdentifier that we assign to the CardType, which ensures
+                // we have 0(1) lookup when fetching cards by ID
+                parsed.id = CardTypeIdentifier(id);
                 id += 1;
                 cards.push(parsed);
             }
@@ -38,19 +41,31 @@ impl Cards {
         match reference {
             Reference::Identifier(id) => self.cards.iter().find(|s| s.name == id),
             Reference::StaticIdentifier(id) => self.cards.iter().find(|s| s.name == id),
-            Reference::ID(id) => self.cards.get(id as usize),
+            Reference::ID(id) => self.cards.get(id.0 as usize),
         }
+    }
+
+    pub fn from_test(toml_cards: Vec<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut cards = Vec::new();
+        let mut id = 0;
+        for str in toml_cards.iter() {
+            let mut parsed: CardType = toml::from_str(&str)?;
+            parsed.id = CardTypeIdentifier(id);
+            id += 1;
+            cards.push(parsed);
+        }
+        Ok(Cards { cards })
     }
 }
 
 pub enum Reference {
     Identifier(String),
     StaticIdentifier(&'static str),
-    ID(u32),
+    ID(CardTypeIdentifier),
 }
 
-impl From<u32> for Reference {
-    fn from(id: u32) -> Self {
+impl From<CardTypeIdentifier> for Reference {
+    fn from(id: CardTypeIdentifier) -> Self {
         Reference::ID(id)
     }
 }
