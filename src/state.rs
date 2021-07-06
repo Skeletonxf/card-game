@@ -71,6 +71,23 @@ pub struct GameState {
     pub hand: Vec<Card>,
     pub left_deck: Vec<Card>,
     pub right_deck: Vec<Card>,
+    /// Resolutions that will need to resolve once both players end their turn. Each index/element
+    /// corresponds to the phase that the action will resolve in.
+    pub queued_effects: Vec<PhaseResolutions>,
+    /// The current phase of the player's turn. Starts at 0 and counts up each time the player
+    /// takes a major action.
+    pub phase: usize,
+    /// True when the player has taken a major action such as summoning a card from their hand,
+    /// (they are in the response window) and can only take actions which respond to the major
+    /// action taken, or yield and start their next phase to take another major action.
+    pub response_window: bool,
+}
+
+/// The set of effects that will resolve for a particular player in a particular phase of their
+/// turn.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PhaseResolutions {
+    pub effects: Vec<Resolution>,
 }
 
 /// A unique id assigned to a Card to uniquely identify the copy
@@ -87,6 +104,8 @@ impl From<usize> for CardEffect {
     }
 }
 
+/// An action is something the player can do immediately during their turn either as a game
+/// mechanic like summoning a card from their hand or as a card effect activation cost.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Action {
     /// Summon a card from the hand onto the next available slot on the field.
@@ -95,7 +114,20 @@ pub enum Action {
     ActivateFromField(CardInstance, CardEffect),
     /// Destroy a card, moving it from the field to the graveyard, retaining its column from the field.
     DestroyOnField(CardInstance),
+    /// End the current response window so the player can take a new major action.
+    YieldResponseWindow,
 }
+
+/// A resolution is something the player can queue onto the current phase of their turn which
+/// does not take immediate effect but resolves simulatenously with the other player's resolutions
+/// when both players finish their turn. Unlike Actions, Resolutions can thus affect the other
+/// player's gamestate, but they may also miss their intended targets.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Resolution {
+    /// Destroy a card on the opponent's field, moving it from the field to the graveyard, retaining its column from the field.
+    DestroyOnOpponentField(CardInstance),
+}
+
 #[derive(Debug, Clone)]
 struct InvalidAction;
 
@@ -128,6 +160,9 @@ impl GameState {
             optional.push(Action::SummonFromHand(card.instance));
         }
         if mandatory.is_empty() {
+            if self.response_window {
+                optional.push(Action::YieldResponseWindow);
+            }
             optional
         } else {
             mandatory
@@ -148,6 +183,14 @@ impl GameState {
         }
     }
 
+    /// Adds a resolution to the current phase's queued effects.
+    pub fn queue_resolution(&mut self, _card_pool: &Cards, resolution: Resolution) {
+        if self.queued_effects.len() - 1 < self.phase {
+            self.queued_effects.push(PhaseResolutions::default());
+        }
+        self.queued_effects[self.phase].effects.push(resolution);
+    }
+
     pub fn take_action(&mut self, card_pool: &Cards, action: Action) -> Result<(), Box<dyn std::error::Error>> {
         match action {
             Action::SummonFromHand(instance) => {
@@ -163,6 +206,7 @@ impl GameState {
                         card.state = CardStatus::Summoned;
                         let slot = self.empty_slot_on_field();
                         self.field.insert(slot, card);
+                        self.response_window = true;
                     }
                     None => {
                         return Err(Box::new(InvalidAction));
@@ -184,6 +228,7 @@ impl GameState {
                             Some(effect_type) => {
                                 if effect_type.can_activate(card_pool, card_type, self, instance).possible() {
                                     effect_type.activate(card_pool, card_type, self, instance);
+                                    self.response_window = true;
                                 } else {
                                     return Err(Box::new(InvalidAction));
                                 }
@@ -210,9 +255,19 @@ impl GameState {
                             .entry(index)
                             .or_insert_with(|| Vec::with_capacity(1))
                             .push(card);
+                        self.response_window = true;
                     }
                     None => return Err(Box::new(InvalidAction)),
                 }
+            }
+            Action::YieldResponseWindow => {
+                // Reset the status of all our cards since we're exiting this response window
+                self.hand.iter_mut().for_each(|card| card.state = CardStatus::None);
+                self.field.iter_mut().for_each(|(_, card)| card.state = CardStatus::None);
+                self.graveyard.iter_mut().for_each(|(_, cards)| cards.iter_mut().for_each(|card| card.state = CardStatus::None));
+                self.response_window = false;
+                // Enter the next phase of our turn
+                self.phase += 1;
             }
         }
         Ok(())
