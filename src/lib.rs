@@ -5,7 +5,7 @@ mod state;
 #[cfg(test)]
 mod tests {
     use crate::cards::Cards;
-    use crate::state::{Action, Card, CardInstance, CardEffect, CardStatus, GameState};
+    use crate::state::{Action, ActivationStatus, Card, CardInstance, CardEffect, CardStatus, GameState};
 
     #[test]
     fn reading_cards() {
@@ -13,6 +13,49 @@ mod tests {
         let card = cards.card("Staple Dragon").unwrap();
         assert_eq!(card.name, "Staple Dragon");
     }
+    //
+    // #[test]
+    // fn draw_from_deck() {
+    //     let card_pool = Cards::from_test(vec![
+    //     r#"
+    //     name = "TODO"
+    //     defense = 5
+    //     attack = 6
+    //     [[effects]]
+    //         type = "OnDraw"
+    //         mandatory = true
+    //         [effects.trigger]
+    //             type = "DestroySelfUnless"
+    //             [effects.trigger.condition]
+    //                 type = "NamedCardOnField"
+    //                 name = "Dragonification"
+    //     "#,
+    //     ]).expect("Parsing card types should not fail");
+    //     let mut player = GameState {
+    //         left_deck: vec![Card {
+    //             card_type: card_pool.card("TODO").unwrap().id,
+    //             state: CardStatus::None,
+    //             instance: CardInstance(0),
+    //         }],
+    //         remaining_draws: 1,
+    //         ..Default::default()
+    //     };
+    //     let instance = CardInstance(0);
+    //
+    //     let actions = player.actions(&card_pool);
+    //     assert_eq!(actions.len(), 1);
+    //     assert_eq!(actions[0], Action::DrawFromLeftDeck);
+    //     let result = player.take_action(&card_pool, actions[0]);
+    //     assert!(result.is_ok());
+    //     assert!(player
+    //         .hand
+    //         .iter()
+    //         .any(|card| card.instance == instance));
+    //     assert!(!player
+    //         .left_deck
+    //         .iter()
+    //         .any(|card| card.instance == instance));
+    // }
 
     #[test]
     fn summon_from_hand_mandatory_response_window() {
@@ -59,7 +102,7 @@ mod tests {
         let actions = player.actions(&card_pool);
         assert_eq!(player.response_window, true);
         assert_eq!(actions.len(), 1);
-        assert_eq!(actions[0], Action::ActivateFromField(instance, CardEffect(0)));
+        assert_eq!(actions[0], Action::ActivateFromField(instance, CardEffect(0), ActivationStatus::Mandatory.into()));
         let result = player.take_action(&card_pool, actions[0]);
         assert!(result.is_ok());
         assert!(!player
@@ -126,9 +169,9 @@ mod tests {
         let actions = player.actions(&card_pool);
         assert_eq!(player.response_window, true);
         assert_eq!(actions.len(), 2);
-        assert!(actions.contains(&Action::ActivateFromField(instance, CardEffect(0))));
+        assert!(actions.contains(&Action::ActivateFromField(instance, CardEffect(0), ActivationStatus::Can.into())));
         assert!(actions.contains(&Action::YieldResponseWindow));
-        let result = player.take_action(&card_pool,Action::YieldResponseWindow);
+        let result = player.take_action(&card_pool, Action::YieldResponseWindow);
         assert!(result.is_ok());
         assert!(player
             .field

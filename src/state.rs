@@ -16,14 +16,32 @@ pub enum CardStatus {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ActivationStatus {
-    Cannot,
     Can,
     Mandatory,
 }
 
-impl ActivationStatus {
-    pub fn possible(&self) -> bool {
-        self != &ActivationStatus::Cannot
+/// A possible way that a card effect can be activated, if at all.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Activation {
+    pub status: ActivationStatus,
+    pub column: Option<i32>,
+}
+
+impl Default for Activation {
+    fn default() -> Self {
+        Activation {
+            status: ActivationStatus::Can,
+            column: None,
+        }
+    }
+}
+
+impl From<ActivationStatus> for Activation {
+    fn from(activation_status: ActivationStatus) -> Self {
+        Activation {
+            status: activation_status,
+            ..Default::default()
+        }
     }
 }
 
@@ -49,7 +67,7 @@ impl Card {
             .expect("CardType lookup should always succeed since we create card instances from the card pool")
     }
 
-    pub fn can_activate(&self, card_pool: &Cards, game_state: &GameState) -> Vec<ActivationStatus> {
+    pub fn can_activate(&self, card_pool: &Cards, game_state: &GameState) -> Vec<Vec<Activation>> {
         let card_type = self.lookup_self(card_pool);
         card_type.effects
             .iter()
@@ -81,6 +99,8 @@ pub struct GameState {
     /// (they are in the response window) and can only take actions which respond to the major
     /// action taken, or yield and start their next phase to take another major action.
     pub response_window: bool,
+    /// The number of cards the player is still able to draw from their deck.
+    pub remaining_draws: u32,
 }
 
 /// The set of effects that will resolve for a particular player in a particular phase of their
@@ -110,12 +130,16 @@ impl From<usize> for CardEffect {
 pub enum Action {
     /// Summon a card from the hand onto the next available slot on the field.
     SummonFromHand(CardInstance),
-    /// Activate an effect of a card already on the field.
-    ActivateFromField(CardInstance, CardEffect),
+    /// Activate an effect of a card already on the field in a particular way.
+    ActivateFromField(CardInstance, CardEffect, Activation),
+    /// Activate an effect of a card in the hand in a particular way.
+    ActivateFromHand(CardInstance, CardEffect, Activation),
     /// Destroy a card, moving it from the field to the graveyard, retaining its column from the field.
     DestroyOnField(CardInstance),
     /// End the current response window so the player can take a new major action.
     YieldResponseWindow,
+    DrawFromLeftDeck,
+    DrawFromRightDeck,
 }
 
 /// A resolution is something the player can queue onto the current phase of their turn which
@@ -144,15 +168,16 @@ impl GameState {
         let mut mandatory = Vec::new();
         let mut optional = Vec::new();
         for card in self.field.values() {
-            for (n, effect_status) in card.can_activate(card_pool, self).iter().enumerate() {
-                match effect_status {
-                    ActivationStatus::Mandatory => {
-                        mandatory.push(Action::ActivateFromField(card.instance, n.into()))
+            for (n, effect) in card.can_activate(card_pool, self).iter().enumerate() {
+                for activation in effect.iter() {
+                    match activation.status {
+                        ActivationStatus::Mandatory => {
+                            mandatory.push(Action::ActivateFromField(card.instance, n.into(), *activation))
+                        }
+                        ActivationStatus::Can => {
+                            optional.push(Action::ActivateFromField(card.instance, n.into(), *activation))
+                        }
                     }
-                    ActivationStatus::Can => {
-                        optional.push(Action::ActivateFromField(card.instance, n.into()))
-                    }
-                    _ => (),
                 }
             }
         }
@@ -162,6 +187,13 @@ impl GameState {
         if mandatory.is_empty() {
             if self.response_window {
                 optional.push(Action::YieldResponseWindow);
+            } else if self.remaining_draws > 0 {
+                if !self.left_deck.is_empty() {
+                    optional.push(Action::DrawFromLeftDeck);
+                }
+                if !self.right_deck.is_empty() {
+                    optional.push(Action::DrawFromRightDeck);
+                }
             }
             optional
         } else {
@@ -181,6 +213,12 @@ impl GameState {
                 index = -index
             }
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.phase = 0;
+        self.queued_effects.clear();
+        self.remaining_draws = 1;
     }
 
     /// Adds a resolution to the current phase's queued effects.
@@ -213,7 +251,7 @@ impl GameState {
                     }
                 }
             }
-            Action::ActivateFromField(instance, effect) => {
+            Action::ActivateFromField(instance, effect, activation) => {
                 match self
                     .field
                     .iter()
@@ -226,12 +264,30 @@ impl GameState {
                         let card_type = card.lookup_self(card_pool);
                         match card_type.effects.get(effect.0 as usize) {
                             Some(effect_type) => {
-                                if effect_type.can_activate(card_pool, card_type, self, instance).possible() {
-                                    effect_type.activate(card_pool, card_type, self, instance);
-                                    self.response_window = true;
-                                } else {
-                                    return Err(Box::new(InvalidAction));
-                                }
+                                effect_type.activate(card_pool, card_type, self, instance, activation);
+                                self.response_window = true;
+                            }
+                            None => return Err(Box::new(InvalidAction)),
+                        }
+                    }
+                    None => return Err(Box::new(InvalidAction)),
+                }
+            }
+            Action::ActivateFromHand(instance, effect, activation) => {
+                match self
+                    .hand
+                    .iter()
+                    .enumerate()
+                    .find(|(_, card)| card.instance == instance)
+                    .map(|(i, _)| i)
+                {
+                    Some(index) => {
+                        let card = self.hand.remove(index);
+                        let card_type = card.lookup_self(card_pool);
+                        match card_type.effects.get(effect.0 as usize) {
+                            Some(effect_type) => {
+                                effect_type.activate(card_pool, card_type, self, instance, activation);
+                                self.response_window = true;
                             }
                             None => return Err(Box::new(InvalidAction)),
                         }
@@ -269,7 +325,51 @@ impl GameState {
                 // Enter the next phase of our turn
                 self.phase += 1;
             }
+            Action::DrawFromLeftDeck => {
+                let card = self.left_deck.pop();
+                match card {
+                    Some(mut card) => {
+                        card.state = CardStatus::Drawn;
+                        self.hand.push(card);
+                        self.response_window = true;
+                    }
+                    None => return Err(Box::new(InvalidAction)),
+                }
+            }
+            Action::DrawFromRightDeck => {
+                let card = self.right_deck.pop();
+                match card {
+                    Some(mut card) => {
+                        card.state = CardStatus::Drawn;
+                        self.hand.push(card);
+                        self.response_window = true;
+                    }
+                    None => return Err(Box::new(InvalidAction)),
+                }
+            }
         }
         Ok(())
     }
+}
+
+
+pub fn resolve(_card_pool: &Cards, player_one: &mut GameState, player_two: &mut GameState) {
+    let total_phases = std::cmp::max(player_one.phase, player_two.phase);
+    for phase in 0..total_phases {
+        let player_one_effects = player_one.queued_effects.get(phase);
+        let player_two_effects = player_two.queued_effects.get(phase);
+        let total_effects = std::cmp::max(
+            player_one_effects
+                .map(|resolutions| resolutions.effects.len()).unwrap_or(0),
+            player_two_effects
+                .map(|resolutions| resolutions.effects.len()).unwrap_or(0),
+        );
+        for i in 0..total_effects {
+            let _player_one_effect = player_one_effects.and_then(|resolutions| resolutions.effects.get(i));
+            let _player_two_effect = player_two_effects.and_then(|resolutions| resolutions.effects.get(i));
+            // TODO: Resolve the effects on the game states
+        }
+    }
+    player_one.reset();
+    player_two.reset();
 }
