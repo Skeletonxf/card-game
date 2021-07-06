@@ -24,14 +24,19 @@ pub enum ActivationStatus {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Activation {
     pub status: ActivationStatus,
-    pub column: Option<i32>,
+    pub data: ActivationData,
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct ActivationData {
+    pub slot: Option<i32>,
 }
 
 impl Default for Activation {
     fn default() -> Self {
         Activation {
             status: ActivationStatus::Can,
-            column: None,
+            data: ActivationData::default(),
         }
     }
 }
@@ -130,12 +135,16 @@ impl From<usize> for CardEffect {
 pub enum Action {
     /// Summon a card from the hand onto the next available slot on the field.
     SummonFromHand(CardInstance),
+    /// Summon a card from the hand onto a specific empty slot on the field.
+    SummonFromHandToSlot(CardInstance, i32),
     /// Activate an effect of a card already on the field in a particular way.
     ActivateFromField(CardInstance, CardEffect, Activation),
     /// Activate an effect of a card in the hand in a particular way.
     ActivateFromHand(CardInstance, CardEffect, Activation),
     /// Destroy a card, moving it from the field to the graveyard, retaining its column from the field.
     DestroyOnField(CardInstance),
+    /// Return a card on the field to the hand.
+    ReturnFieldToHand(CardInstance),
     /// End the current response window so the player can take a new major action.
     YieldResponseWindow,
     DrawFromLeftDeck,
@@ -182,7 +191,21 @@ impl GameState {
             }
         }
         for card in self.hand.iter() {
-            optional.push(Action::SummonFromHand(card.instance));
+            for (n, effect) in card.can_activate(card_pool, self).iter().enumerate() {
+                for activation in effect.iter() {
+                    match activation.status {
+                        ActivationStatus::Mandatory => {
+                            mandatory.push(Action::ActivateFromHand(card.instance, n.into(), *activation))
+                        }
+                        ActivationStatus::Can => {
+                            optional.push(Action::ActivateFromHand(card.instance, n.into(), *activation))
+                        }
+                    }
+                }
+            }
+            if !self.response_window {
+                optional.push(Action::SummonFromHand(card.instance));
+            }
         }
         if mandatory.is_empty() {
             if self.response_window {
@@ -230,8 +253,15 @@ impl GameState {
     }
 
     pub fn take_action(&mut self, card_pool: &Cards, action: Action) -> Result<(), Box<dyn std::error::Error>> {
-        match action {
+        return match action {
             Action::SummonFromHand(instance) => {
+                let slot = self.empty_slot_on_field();
+                self.take_action(card_pool, Action::SummonFromHandToSlot(instance, slot))
+            }
+            Action::SummonFromHandToSlot(instance, slot) => {
+                if self.field.contains_key(&slot) {
+                    return Err(Box::new(InvalidAction));
+                }
                 match self
                     .hand
                     .iter()
@@ -242,13 +272,11 @@ impl GameState {
                     Some(index) => {
                         let mut card = self.hand.remove(index);
                         card.state = CardStatus::Summoned;
-                        let slot = self.empty_slot_on_field();
                         self.field.insert(slot, card);
                         self.response_window = true;
+                        Ok(())
                     }
-                    None => {
-                        return Err(Box::new(InvalidAction));
-                    }
+                    None => Err(Box::new(InvalidAction))
                 }
             }
             Action::ActivateFromField(instance, effect, activation) => {
@@ -266,11 +294,12 @@ impl GameState {
                             Some(effect_type) => {
                                 effect_type.activate(card_pool, card_type, self, instance, activation);
                                 self.response_window = true;
+                                Ok(())
                             }
-                            None => return Err(Box::new(InvalidAction)),
+                            None => Err(Box::new(InvalidAction)),
                         }
                     }
-                    None => return Err(Box::new(InvalidAction)),
+                    None => Err(Box::new(InvalidAction)),
                 }
             }
             Action::ActivateFromHand(instance, effect, activation) => {
@@ -282,17 +311,18 @@ impl GameState {
                     .map(|(i, _)| i)
                 {
                     Some(index) => {
-                        let card = self.hand.remove(index);
+                        let card = self.hand.get(index).expect("card always present");
                         let card_type = card.lookup_self(card_pool);
                         match card_type.effects.get(effect.0 as usize) {
                             Some(effect_type) => {
                                 effect_type.activate(card_pool, card_type, self, instance, activation);
                                 self.response_window = true;
+                                Ok(())
                             }
-                            None => return Err(Box::new(InvalidAction)),
+                            None => Err(Box::new(InvalidAction)),
                         }
                     }
-                    None => return Err(Box::new(InvalidAction)),
+                    None => Err(Box::new(InvalidAction)),
                 }
             }
             Action::DestroyOnField(instance) => {
@@ -312,8 +342,29 @@ impl GameState {
                             .or_insert_with(|| Vec::with_capacity(1))
                             .push(card);
                         self.response_window = true;
+                        Ok(())
                     }
-                    None => return Err(Box::new(InvalidAction)),
+                    None => Err(Box::new(InvalidAction)),
+                }
+            }
+            Action::ReturnFieldToHand(instance) => {
+                match self
+                    .field
+                    .iter()
+                    .find(|(_, card)| card.instance == instance)
+                    .map(|(i, _)| i)
+                    .cloned()
+                {
+                    Some(index) => {
+                        let mut card = self.field.remove(&index).expect("card always present");
+                        card.state = CardStatus::ReturnedToHand;
+                        self
+                            .hand
+                            .push(card);
+                        self.response_window = true;
+                        Ok(())
+                    }
+                    None => Err(Box::new(InvalidAction)),
                 }
             }
             Action::YieldResponseWindow => {
@@ -324,31 +375,41 @@ impl GameState {
                 self.response_window = false;
                 // Enter the next phase of our turn
                 self.phase += 1;
+                Ok(())
             }
             Action::DrawFromLeftDeck => {
+                if self.remaining_draws == 0 {
+                    return Err(Box::new(InvalidAction));
+                }
                 let card = self.left_deck.pop();
+                self.remaining_draws -= 1;
                 match card {
                     Some(mut card) => {
                         card.state = CardStatus::Drawn;
                         self.hand.push(card);
                         self.response_window = true;
+                        Ok(())
                     }
-                    None => return Err(Box::new(InvalidAction)),
+                    None => Err(Box::new(InvalidAction)),
                 }
             }
             Action::DrawFromRightDeck => {
+                if self.remaining_draws == 0 {
+                    return Err(Box::new(InvalidAction));
+                }
                 let card = self.right_deck.pop();
+                self.remaining_draws -= 1;
                 match card {
                     Some(mut card) => {
                         card.state = CardStatus::Drawn;
                         self.hand.push(card);
                         self.response_window = true;
+                        Ok(())
                     }
-                    None => return Err(Box::new(InvalidAction)),
+                    None => Err(Box::new(InvalidAction)),
                 }
             }
         }
-        Ok(())
     }
 }
 

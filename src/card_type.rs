@@ -1,5 +1,5 @@
 use crate::cards::Cards;
-use crate::state::{Action, Activation, ActivationStatus, GameState, CardInstance, CardStatus};
+use crate::state::{Action, Activation, ActivationData, ActivationStatus, GameState, CardInstance, CardStatus};
 
 use std::fmt;
 use std::fmt::Debug;
@@ -39,7 +39,7 @@ pub struct OnSummon {
 
 #[typetag::serde]
 impl CardEffect for OnSummon {
-    fn can_activate(&self, _card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance) -> Vec<Activation> {
+    fn can_activate(&self, card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance) -> Vec<Activation> {
         if game_state.field.values()
             .any(|card|
                 card.instance == instance
@@ -47,10 +47,10 @@ impl CardEffect for OnSummon {
                 && card.state == CardStatus::Summoned
             )
         {
-            vec![Activation {
+            self.trigger.variants(card_pool, card_type, game_state, instance).into_iter().map(|data| Activation {
                 status: if self.mandatory { ActivationStatus::Mandatory } else { ActivationStatus::Can },
-                ..Default::default()
-            }]
+                data,
+            }).collect()
         } else {
             vec![]
         }
@@ -63,24 +63,25 @@ impl CardEffect for OnSummon {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct OnDrawTargetingColumn {
+pub struct OnDraw {
     pub mandatory: bool,
     pub trigger: Box<dyn EffectTrigger>,
 }
 
 #[typetag::serde]
-impl CardEffect for OnDrawTargetingColumn {
-    fn can_activate(&self, _card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance) -> Vec<Activation> {
+impl CardEffect for OnDraw {
+    fn can_activate(&self, card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance) -> Vec<Activation> {
         if game_state.hand.iter()
             .any(|card|
                 card.instance == instance
                 && card.instance_of(card_type)
-                && card.state == CardStatus::Summoned
+                && card.state == CardStatus::Drawn
             )
         {
-            //let status = if self.mandatory { ActivationStatus::Mandatory } else { ActivationStatus::Can };
-            // TODO: Check which columns we can activate in
-            unimplemented!()
+            self.trigger.variants(card_pool, card_type, game_state, instance).into_iter().map(|data| Activation {
+                status: if self.mandatory { ActivationStatus::Mandatory } else { ActivationStatus::Can },
+                data,
+            }).collect()
         } else {
             vec![]
         }
@@ -95,6 +96,10 @@ impl CardEffect for OnDrawTargetingColumn {
 #[typetag::serde(tag = "type")]
 #[allow(unused_variables)]
 pub trait EffectTrigger: Send + Sync + fmt::Debug {
+    /// In what different ways can this trigger activate?
+    fn variants(&self, card_pool: &Cards, card_type: &CardType, game_state: &GameState, instance: CardInstance) -> Vec<ActivationData> {
+        vec![ActivationData::default()]
+    }
     fn activation(&self, card_pool: &Cards, card_type: &CardType, game_state: &mut GameState, instance: CardInstance, activation: Activation) {}
     fn resolution(&self, card_pool: &Cards, card_type: &CardType, game_state: &mut GameState, instance: CardInstance, activation: Activation) {}
 }
@@ -120,13 +125,24 @@ pub struct SwapHandWithField;
 
 #[typetag::serde]
 impl EffectTrigger for SwapHandWithField {
-    fn activation(&self, card_pool: &Cards, card_type: &CardType, game_state: &mut GameState, instance: CardInstance, activation: Activation) {
-        let column = match activation.column {
-            Some(c) => c,
+    // We can potentially activate on any column of our field
+    fn variants(&self, _card_pool: &Cards, _card_type: &CardType, game_state: &GameState, _instance: CardInstance) -> Vec<ActivationData> {
+        game_state.field.iter().map(|(i, _)| ActivationData {
+            slot: Some(*i)
+        }).collect()
+    }
+
+    fn activation(&self, card_pool: &Cards, _card_type: &CardType, game_state: &mut GameState, instance: CardInstance, activation: Activation) {
+        let slot = match activation.data.slot {
+            Some(slot) => slot,
             None => return
         };
-        // do something with this column for the effect
-        unimplemented!()
+        let target = match game_state.field.get(&slot).map(|card| card.instance) {
+            Some(card) => card,
+            None => return
+        };
+        let _ = game_state.take_action(card_pool, Action::ReturnFieldToHand(target))
+            .and_then(|_| game_state.take_action(card_pool, Action::SummonFromHandToSlot(instance, slot)));
     }
 }
 

@@ -1,0 +1,8 @@
+name = "Staple Mirage"
+defense = 2
+attack = 0
+[[effects]]
+	type = "OnDraw"
+	mandatory = false
+	[effects.trigger]
+		type = "SwapHandWithField"
