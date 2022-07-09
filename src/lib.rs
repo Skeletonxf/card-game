@@ -1,6 +1,7 @@
 mod card_type;
 mod cards;
 mod state;
+mod prototyping;
 
 #[cfg(test)]
 mod tests {
