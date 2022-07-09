@@ -1,63 +1,32 @@
+use std::fmt;
+use std::sync::atomic::{AtomicU32, Ordering};
 use crate::cards::Cards;
 use crate::card_type::{CardTypeIdentifier, CardType};
 
-use std::collections::BTreeMap;
-use std::fmt;
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum CardStatus {
-    Drawn,
-    Discarded,
-    Summoned,
-    Destroyed,
-    ReturnedToHand,
-    None,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ActivationStatus {
+pub enum ActivatableType {
     Can,
     Mandatory,
 }
 
-/// A possible way that a card effect can be activated, if at all.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Activation {
-    pub status: ActivationStatus,
-    pub data: ActivationData,
-}
+static CARD_INSTANCES: AtomicU32 = AtomicU32::new(0);
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub struct ActivationData {
-    pub slot: Option<i32>,
-}
-
-impl Default for Activation {
-    fn default() -> Self {
-        Activation {
-            status: ActivationStatus::Can,
-            data: ActivationData::default(),
-        }
-    }
-}
-
-impl From<ActivationStatus> for Activation {
-    fn from(activation_status: ActivationStatus) -> Self {
-        Activation {
-            status: activation_status,
-            ..Default::default()
-        }
-    }
-}
-
-#[derive(Debug)]
+// purposely not copy or clone so we never dupe cards by accident
+#[derive(Debug, Eq, PartialEq)]
 pub struct Card {
     pub card_type: CardTypeIdentifier,
-    pub state: CardStatus,
     pub instance: CardInstance,
 }
 
 impl Card {
+    /// creates a new card (intended for initialisation of a game only)
+    pub fn instantiate(card_type: &CardType) -> Card {
+        Card {
+            card_type: card_type.id,
+            instance: CardInstance(CARD_INSTANCES.fetch_add(1, Ordering::SeqCst)),
+        }
+    }
+
     pub fn instance_of(&self, card_type: &CardType) -> bool {
         self.card_type == card_type.id
     }
@@ -71,53 +40,17 @@ impl Card {
             .card(self.card_type)
             .expect("CardType lookup should always succeed since we create card instances from the card pool")
     }
-
-    pub fn can_activate(&self, card_pool: &Cards, game_state: &GameState) -> Vec<Vec<Activation>> {
-        let card_type = self.lookup_self(card_pool);
-        card_type.effects
-            .iter()
-            .map(|card| card.can_activate(card_pool, card_type, game_state, self.instance))
-            .collect()
-    }
-}
-
-/// A particular game state, defines where all the card instances are. Conceptually this should
-/// live for no longer than the card pool does, since every card instance only works by looking
-/// up their card type from the card pool first. However, the card pool is essentially 'static
-/// apart from unit testing, and everything is much easier if the card pool exists seperately
-/// to the gamestate since then there are no issues with a card type (stored in the card pool)
-/// freely mutating the game state.
-#[derive(Default, Debug)]
-pub struct GameState {
-    pub field: BTreeMap<i32, Card>,
-    pub graveyard: BTreeMap<i32, Vec<Card>>,
-    pub hand: Vec<Card>,
-    pub left_deck: Vec<Card>,
-    pub right_deck: Vec<Card>,
-    /// Resolutions that will need to resolve once both players end their turn. Each index/element
-    /// corresponds to the phase that the action will resolve in.
-    pub queued_effects: Vec<PhaseResolutions>,
-    /// The current phase of the player's turn. Starts at 0 and counts up each time the player
-    /// takes a major action.
-    pub phase: usize,
-    /// True when the player has taken a major action such as summoning a card from their hand,
-    /// (they are in the response window) and can only take actions which respond to the major
-    /// action taken, or yield and start their next phase to take another major action.
-    pub response_window: bool,
-    /// The number of cards the player is still able to draw from their deck.
-    pub remaining_draws: u32,
-}
-
-/// The set of effects that will resolve for a particular player in a particular phase of their
-/// turn.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PhaseResolutions {
-    pub effects: Vec<Resolution>,
 }
 
 /// A unique id assigned to a Card to uniquely identify the copy
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct CardInstance(pub u32);
+
+impl fmt::Debug for CardInstance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "#{:?}", self.0)
+    }
+}
 
 /// The ith card effect a CardType may have
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -128,41 +61,8 @@ impl From<usize> for CardEffect {
         CardEffect(index as u32)
     }
 }
-
-/// An action is something the player can do immediately during their turn either as a game
-/// mechanic like summoning a card from their hand or as a card effect activation cost.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Action {
-    /// Summon a card from the hand onto the next available slot on the field.
-    SummonFromHand(CardInstance),
-    /// Summon a card from the hand onto a specific empty slot on the field.
-    SummonFromHandToSlot(CardInstance, i32),
-    /// Activate an effect of a card already on the field in a particular way.
-    ActivateFromField(CardInstance, CardEffect, Activation),
-    /// Activate an effect of a card in the hand in a particular way.
-    ActivateFromHand(CardInstance, CardEffect, Activation),
-    /// Destroy a card, moving it from the field to the graveyard, retaining its column from the field.
-    DestroyOnField(CardInstance),
-    /// Return a card on the field to the hand.
-    ReturnFieldToHand(CardInstance),
-    /// End the current response window so the player can take a new major action.
-    YieldResponseWindow,
-    DrawFromLeftDeck,
-    DrawFromRightDeck,
-}
-
-/// A resolution is something the player can queue onto the current phase of their turn which
-/// does not take immediate effect but resolves simulatenously with the other player's resolutions
-/// when both players finish their turn. Unlike Actions, Resolutions can thus affect the other
-/// player's gamestate, but they may also miss their intended targets.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Resolution {
-    /// Destroy a card on the opponent's field, moving it from the field to the graveyard, retaining its column from the field.
-    DestroyOnOpponentField(CardInstance),
-}
-
 #[derive(Debug, Clone)]
-struct InvalidAction;
+pub struct InvalidAction;
 
 impl fmt::Display for InvalidAction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -172,265 +72,162 @@ impl fmt::Display for InvalidAction {
 
 impl std::error::Error for InvalidAction {}
 
+enum CardState {
+    Deck,
+    Hand,
+    Field,
+    Destroyed,
+}
+
+// Players choose the allocation and order of their left + center + right decks prior to turn 1
+// then draw 5 cards (drawing is always the players' choice of left/right)
+// Card effects that 'return to deck' are always the choice of the player the owns the card
+// Players cannot search their decks. Once game is started, the decks are strictkly like a stack
+// where cards can only be drawn off the top or returned to the bottom or top of the deck by card
+// effect
+// 'spells' are just cards like 'monsters'/'creatures' with 0 atk and 0 def
+// the player will typically want to activate/summon these to their back row for protection
+// but they are not distinct card types and can go to either location
+// 'activating' a card from hand is just a shorthand for summoning a card from the hand with an
+// 'on summon activate' effect.
+#[derive(Debug, Eq, PartialEq)]
+pub struct Field {
+    // Cards on the front or back column in the field are always face up. Cards have both atk and
+    // hp. After being attacked, damage counters are placed on the card equal to the atk. Cards
+    // are destroyed when they have as many or more damage counters than hp.
+    front: [Option<Card> ; 7],
+    // Counters only exist on cards while they are on the field. If a card returns to the hand,
+    // deck or is destroyed it loses all its counters. In this way, bouncing cards around the
+    // possible states could be used to reset a card's damage.
+    back: [Option<Card> ; 7],
+    left_deck: Vec<Card>,
+    // the center deck may only contain up to 20 cards these cards are 'in the deck'
+    // before summoning
+    // Cards with no cost to summon may not be placed in the center deck
+    // The center deck is face up, has no order, and is public knowledge.
+    center_deck: Vec<Card>,
+    right_deck: Vec<Card>,
+    // destroyed cards retain their column upon death, and go to a row behind the three decks
+    // revival effects would typically involve the column they were destroyed in
+    // The destroyed column is also face up and public knowledge, with no order to the stacked
+    // cards.
+    destroyed: [Vec<Card> ; 7],
+    // The hand is orderless private knowledge for each player.
+    hand: Vec<Card>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Player {
+    One,
+    Two,
+}
+
+#[derive(Eq, PartialEq)]
+pub struct GameState {
+    player_one: Field,
+    player_two: Field,
+    active: Player,
+    open: GameStateType,
+}
+
+pub enum Action {
+    Effect,
+    Summon,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GameStateType {
+    /// The active player may draw and/or then take an action.
+    Open,
+    /// An effect has been activated and now both players may respond in turn.
+    Closed,
+}
+
+use GameStateType::{Open, Closed};
+
+// Each player gets one action before passing priority to the other player.
+// When in an open game state, a player may optionally draw a card from the top of either their
+// left or right decks (this **cannot** be responded to). Regardless, the player must then take an
+// action or pass to the other player. If a player is unable to draw a card or to take an action
+// then they immediately lose the game. (If a player may draw but not take actions or take actions
+// but not draw they are still in the game for as long as they can limp on).
+// An action consists of activating an effect of a card or summoning a card to the field.
+// When we pass priority to the other player after an action is taken, the game state is closed.
+// The other player must choose to activate an appropriate effect of a card in response or pass
+// back to the opponent.
+// When both players pass, we resolve in reverse order all the activations activated in response
+// to the initial action (effects during resolution **cannot** be responded to).
+// After resolution, the other player gets priority and the game state is back to open.
+
+// If a player has a card(s) with a mandatory effect that may be activated in response, they must
+// choose one of the mandatory effects to activate in response. Only after all mandatory effects
+// have responded may a player elect to respond with optional effects.
+
+// Unlike YuGiOh, interactivity is built into the priority passing, not just for chain links.
+// OTKs and FTKs are not a thing because you can only summon one card before your opponent gets
+// priority to summon their own.
+// Also unlike YuGiOh, there is no randomness in deck construction to worry about, and no searching
+// or shuffling of the deck, so in person play should be a lot more fluid.
+
+// There is no such thing as spell/trap/monster, cards are just Cards, and may be summoned to
+// any of the 14 positions on the field. There is also no 'one' grave, cards retain their column
+// on death. The 'extra deck' in the center is also a lot more loose, containing only cards
+// with summoning costs means there's no 'extra deck' type of card either, a card in the center
+// deck could also be in the left/right deck and drawn, or a player may elect that a card
+// 'returned to the deck' by card effect goes back to their center deck so they can summon it
+// again on the following turn.
+
 impl GameState {
-    pub fn actions(&self, card_pool: &Cards) -> Vec<Action> {
-        let mut mandatory = Vec::new();
-        let mut optional = Vec::new();
-        for card in self.field.values() {
-            for (n, effect) in card.can_activate(card_pool, self).iter().enumerate() {
-                for activation in effect.iter() {
-                    match activation.status {
-                        ActivationStatus::Mandatory => {
-                            mandatory.push(Action::ActivateFromField(card.instance, n.into(), *activation))
-                        }
-                        ActivationStatus::Can => {
-                            optional.push(Action::ActivateFromField(card.instance, n.into(), *activation))
-                        }
-                    }
-                }
-            }
-        }
-        for card in self.hand.iter() {
-            for (n, effect) in card.can_activate(card_pool, self).iter().enumerate() {
-                for activation in effect.iter() {
-                    match activation.status {
-                        ActivationStatus::Mandatory => {
-                            mandatory.push(Action::ActivateFromHand(card.instance, n.into(), *activation))
-                        }
-                        ActivationStatus::Can => {
-                            optional.push(Action::ActivateFromHand(card.instance, n.into(), *activation))
-                        }
-                    }
-                }
-            }
-            if !self.response_window {
-                optional.push(Action::SummonFromHand(card.instance));
-            }
-        }
-        if mandatory.is_empty() {
-            if self.response_window {
-                optional.push(Action::YieldResponseWindow);
-            } else if self.remaining_draws > 0 {
-                if !self.left_deck.is_empty() {
-                    optional.push(Action::DrawFromLeftDeck);
-                }
-                if !self.right_deck.is_empty() {
-                    optional.push(Action::DrawFromRightDeck);
-                }
-            }
-            optional
-        } else {
-            mandatory
+    /// Initialise a game state with both players having empty hands and supplied decks
+    pub fn start(
+        player_one: (Vec<Card>, Vec<Card>, Vec<Card>),
+        player_two: (Vec<Card>, Vec<Card>, Vec<Card>),
+    ) -> Self {
+        GameState {
+            player_one: Field {
+                front: [None, None, None, None, None, None, None],
+                back: [None, None, None, None, None, None, None],
+                left_deck: player_one.0,
+                center_deck: player_one.1,
+                right_deck: player_one.2,
+                destroyed: [vec![], vec![], vec![], vec![], vec![], vec![], vec![]],
+                hand: vec![],
+            },
+            player_two: Field {
+                front: [None, None, None, None, None, None, None],
+                back: [None, None, None, None, None, None, None],
+                left_deck: player_two.0,
+                center_deck: player_two.1,
+                right_deck: player_two.2,
+                destroyed: [vec![], vec![], vec![], vec![], vec![], vec![], vec![]],
+                hand: vec![],
+            },
+            active: Player::One,
+            open: Open,
         }
     }
 
-    fn empty_slot_on_field(&self) -> i32 {
-        let mut index = 0;
-        loop {
-            if !self.field.contains_key(&index) {
-                return index;
-            }
-            if index >= 0 {
-                index = -(index + 1);
-            } else {
-                index = -index
-            }
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.phase = 0;
-        self.queued_effects.clear();
-        self.remaining_draws = 1;
-    }
-
-    /// Adds a resolution to the current phase's queued effects.
-    pub fn queue_resolution(&mut self, _card_pool: &Cards, resolution: Resolution) {
-        if self.queued_effects.len() - 1 < self.phase {
-            self.queued_effects.push(PhaseResolutions::default());
-        }
-        self.queued_effects[self.phase].effects.push(resolution);
-    }
-
-    pub fn take_action(&mut self, card_pool: &Cards, action: Action) -> Result<(), Box<dyn std::error::Error>> {
-        return match action {
-            Action::SummonFromHand(instance) => {
-                let slot = self.empty_slot_on_field();
-                self.take_action(card_pool, Action::SummonFromHandToSlot(instance, slot))
-            }
-            Action::SummonFromHandToSlot(instance, slot) => {
-                if self.field.contains_key(&slot) {
-                    return Err(Box::new(InvalidAction));
-                }
-                match self
-                    .hand
-                    .iter()
-                    .enumerate()
-                    .find(|(_, card)| card.instance == instance)
-                    .map(|(i, _)| i)
-                {
-                    Some(index) => {
-                        let mut card = self.hand.remove(index);
-                        card.state = CardStatus::Summoned;
-                        self.field.insert(slot, card);
-                        self.response_window = true;
-                        Ok(())
-                    }
-                    None => Err(Box::new(InvalidAction))
-                }
-            }
-            Action::ActivateFromField(instance, effect, activation) => {
-                match self
-                    .field
-                    .iter()
-                    .find(|(_, card)| card.instance == instance)
-                    .map(|(i, _)| i)
-                    .cloned()
-                {
-                    Some(index) => {
-                        let card = self.field.get(&index).expect("card always present");
-                        let card_type = card.lookup_self(card_pool);
-                        match card_type.effects.get(effect.0 as usize) {
-                            Some(effect_type) => {
-                                effect_type.activate(card_pool, card_type, self, instance, activation);
-                                self.response_window = true;
-                                Ok(())
-                            }
-                            None => Err(Box::new(InvalidAction)),
-                        }
-                    }
-                    None => Err(Box::new(InvalidAction)),
-                }
-            }
-            Action::ActivateFromHand(instance, effect, activation) => {
-                match self
-                    .hand
-                    .iter()
-                    .enumerate()
-                    .find(|(_, card)| card.instance == instance)
-                    .map(|(i, _)| i)
-                {
-                    Some(index) => {
-                        let card = self.hand.get(index).expect("card always present");
-                        let card_type = card.lookup_self(card_pool);
-                        match card_type.effects.get(effect.0 as usize) {
-                            Some(effect_type) => {
-                                effect_type.activate(card_pool, card_type, self, instance, activation);
-                                self.response_window = true;
-                                Ok(())
-                            }
-                            None => Err(Box::new(InvalidAction)),
-                        }
-                    }
-                    None => Err(Box::new(InvalidAction)),
-                }
-            }
-            Action::DestroyOnField(instance) => {
-                match self
-                    .field
-                    .iter()
-                    .find(|(_, card)| card.instance == instance)
-                    .map(|(i, _)| i)
-                    .cloned()
-                {
-                    Some(index) => {
-                        let mut card = self.field.remove(&index).expect("card always present");
-                        card.state = CardStatus::Destroyed;
-                        self
-                            .graveyard
-                            .entry(index)
-                            .or_insert_with(|| Vec::with_capacity(1))
-                            .push(card);
-                        self.response_window = true;
-                        Ok(())
-                    }
-                    None => Err(Box::new(InvalidAction)),
-                }
-            }
-            Action::ReturnFieldToHand(instance) => {
-                match self
-                    .field
-                    .iter()
-                    .find(|(_, card)| card.instance == instance)
-                    .map(|(i, _)| i)
-                    .cloned()
-                {
-                    Some(index) => {
-                        let mut card = self.field.remove(&index).expect("card always present");
-                        card.state = CardStatus::ReturnedToHand;
-                        self
-                            .hand
-                            .push(card);
-                        self.response_window = true;
-                        Ok(())
-                    }
-                    None => Err(Box::new(InvalidAction)),
-                }
-            }
-            Action::YieldResponseWindow => {
-                // Reset the status of all our cards since we're exiting this response window
-                self.hand.iter_mut().for_each(|card| card.state = CardStatus::None);
-                self.field.iter_mut().for_each(|(_, card)| card.state = CardStatus::None);
-                self.graveyard.iter_mut().for_each(|(_, cards)| cards.iter_mut().for_each(|card| card.state = CardStatus::None));
-                self.response_window = false;
-                // Enter the next phase of our turn
-                self.phase += 1;
-                Ok(())
-            }
-            Action::DrawFromLeftDeck => {
-                if self.remaining_draws == 0 {
-                    return Err(Box::new(InvalidAction));
-                }
-                let card = self.left_deck.pop();
-                self.remaining_draws -= 1;
-                match card {
-                    Some(mut card) => {
-                        card.state = CardStatus::Drawn;
-                        self.hand.push(card);
-                        self.response_window = true;
-                        Ok(())
-                    }
-                    None => Err(Box::new(InvalidAction)),
-                }
-            }
-            Action::DrawFromRightDeck => {
-                if self.remaining_draws == 0 {
-                    return Err(Box::new(InvalidAction));
-                }
-                let card = self.right_deck.pop();
-                self.remaining_draws -= 1;
-                match card {
-                    Some(mut card) => {
-                        card.state = CardStatus::Drawn;
-                        self.hand.push(card);
-                        self.response_window = true;
-                        Ok(())
-                    }
-                    None => Err(Box::new(InvalidAction)),
-                }
-            }
-        }
+    /// Returns which player has priority
+    pub fn priority(&self) -> Player {
+        self.active
     }
 }
 
-
-pub fn resolve(_card_pool: &Cards, player_one: &mut GameState, player_two: &mut GameState) {
-    let total_phases = std::cmp::max(player_one.phase, player_two.phase);
-    for phase in 0..total_phases {
-        let player_one_effects = player_one.queued_effects.get(phase);
-        let player_two_effects = player_two.queued_effects.get(phase);
-        let total_effects = std::cmp::max(
-            player_one_effects
-                .map(|resolutions| resolutions.effects.len()).unwrap_or(0),
-            player_two_effects
-                .map(|resolutions| resolutions.effects.len()).unwrap_or(0),
-        );
-        for i in 0..total_effects {
-            let _player_one_effect = player_one_effects.and_then(|resolutions| resolutions.effects.get(i));
-            let _player_two_effect = player_two_effects.and_then(|resolutions| resolutions.effects.get(i));
-            // TODO: Resolve the effects on the game states
-        }
+impl fmt::Debug for GameState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "GameState {{")?;
+        writeln!(f, "{:?}", self.player_one.hand)?;
+        writeln!(f, "{:?}", self.player_one.destroyed)?;
+        writeln!(f, "{:?} {:?} {:?}", self.player_one.left_deck, self.player_one.center_deck, self.player_one.right_deck)?;
+        writeln!(f, "{:?}", self.player_one.back)?;
+        writeln!(f, "{:?}", self.player_one.front)?;
+        writeln!(f, "=======")?;
+        writeln!(f, "{:?}", self.player_two.front)?;
+        writeln!(f, "{:?}", self.player_two.back)?;
+        writeln!(f, "{:?} {:?} {:?}", self.player_two.left_deck, self.player_two.center_deck, self.player_two.right_deck)?;
+        writeln!(f, "{:?}", self.player_two.destroyed)?;
+        writeln!(f, "{:?}", self.player_two.hand)?;
+        writeln!(f, "}}")?;
+        Ok(())
     }
-    player_one.reset();
-    player_two.reset();
 }
