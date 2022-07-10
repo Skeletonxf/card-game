@@ -116,10 +116,121 @@ pub struct Field {
     hand: Vec<Card>,
 }
 
+impl Field {
+    fn has_cards_to_draw(&self) -> bool {
+        self.has_cards_to_draw_left() || self.has_cards_to_draw_right()
+    }
+
+    fn has_cards_to_draw_left(&self) -> bool {
+        !self.left_deck.is_empty()
+    }
+
+    fn has_cards_to_draw_right(&self) -> bool {
+        !self.right_deck.is_empty()
+    }
+
+    fn field_slots(&self) -> impl Iterator<Item = &Option<Card>> {
+        self.front.iter().chain(self.back.iter())
+    }
+
+    fn space_on_field(&self) -> bool {
+        self.field_slots().any(|slot| slot.is_none())
+    }
+
+    fn cards_to_summon(&self) -> Vec<CardInstance> {
+        if self.space_on_field() {
+            self.hand.iter().map(|card| card.instance).collect()
+        } else {
+            vec![]
+        }
+    }
+
+    fn cards_to_attack(&self) -> Vec<CardInstance> {
+        self.field_slots().filter_map(|slot| slot.as_ref().map(|card| card.instance)).collect()
+    }
+
+    fn slot_is_empty(&self, slot: FieldSlot) -> bool {
+        self[slot].is_none()
+    }
+
+    fn empty_slots(&self) -> Vec<FieldSlot> {
+        self.field_slots().enumerate().filter(|(_, s)| s.is_none()).map(|(i, _)| match i {
+            0 => FieldSlot::F0,
+            1 => FieldSlot::F1,
+            2 => FieldSlot::F2,
+            3 => FieldSlot::F3,
+            4 => FieldSlot::F4,
+            5 => FieldSlot::F5,
+            6 => FieldSlot::F6,
+            7 => FieldSlot::B0,
+            8 => FieldSlot::B1,
+            9 => FieldSlot::B2,
+            10 => FieldSlot::B3,
+            11 => FieldSlot::B4,
+            12 => FieldSlot::B5,
+            13 => FieldSlot::B6,
+            _ => panic!(),
+        }).collect()
+    }
+}
+
+impl std::ops::Index<FieldSlot> for Field {
+    type Output = Option<Card>;
+
+    fn index(&self, index: FieldSlot) -> &Self::Output {
+        match index {
+            FieldSlot::F0 => &self.front[0],
+            FieldSlot::F1 => &self.front[1],
+            FieldSlot::F2 => &self.front[2],
+            FieldSlot::F3 => &self.front[3],
+            FieldSlot::F4 => &self.front[4],
+            FieldSlot::F5 => &self.front[5],
+            FieldSlot::F6 => &self.front[6],
+            FieldSlot::B0 => &self.back[0],
+            FieldSlot::B1 => &self.back[1],
+            FieldSlot::B2 => &self.back[2],
+            FieldSlot::B3 => &self.back[3],
+            FieldSlot::B4 => &self.back[4],
+            FieldSlot::B5 => &self.back[5],
+            FieldSlot::B6 => &self.back[6],
+        }
+    }
+}
+
+impl std::ops::IndexMut<FieldSlot> for Field {
+    fn index_mut(&mut self, index: FieldSlot) -> &mut Self::Output {
+        match index {
+            FieldSlot::F0 => &mut self.front[0],
+            FieldSlot::F1 => &mut self.front[1],
+            FieldSlot::F2 => &mut self.front[2],
+            FieldSlot::F3 => &mut self.front[3],
+            FieldSlot::F4 => &mut self.front[4],
+            FieldSlot::F5 => &mut self.front[5],
+            FieldSlot::F6 => &mut self.front[6],
+            FieldSlot::B0 => &mut self.back[0],
+            FieldSlot::B1 => &mut self.back[1],
+            FieldSlot::B2 => &mut self.back[2],
+            FieldSlot::B3 => &mut self.back[3],
+            FieldSlot::B4 => &mut self.back[4],
+            FieldSlot::B5 => &mut self.back[5],
+            FieldSlot::B6 => &mut self.back[6],
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Player {
     One,
     Two,
+}
+
+impl Player {
+    fn next(&self) -> Player {
+        match self {
+            Player::One => Player::Two,
+            Player::Two => Player::One,
+        }
+    }
 }
 
 #[derive(Eq, PartialEq)]
@@ -130,19 +241,56 @@ pub struct GameState {
     open: GameStateType,
 }
 
-pub enum Action {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActionType {
     Effect,
     Summon,
+    Attack,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum GameStateType {
     /// The active player may draw and/or then take an action.
-    Open,
+    Open {
+        phase: Phase,
+    },
     /// An effect has been activated and now both players may respond in turn.
     Closed,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Phase {
+    MayDraw, MayTakeAction,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FaceDownDeck {
+    Left, Right,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlayerOption {
+    Draw(FaceDownDeck),
+    SkipDraw,
+    Action(Action),
+    SkipAction,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Action {
+    pub action_type: ActionType,
+    pub instance: CardInstance,
+    pub slot: Option<FieldSlot>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[rustfmt::skip]
+pub enum FieldSlot {
+    F0, F1, F2, F3, F4, F5, F6,
+    B0, B1, B2, B3, B4, B5, B6,
+}
+
+use Phase::{MayDraw, MayTakeAction};
 use GameStateType::{Open, Closed};
 
 // Each player gets one action before passing priority to the other player.
@@ -178,10 +326,10 @@ use GameStateType::{Open, Closed};
 // again on the following turn.
 
 impl GameState {
-    /// Initialise a game state with both players having empty hands and supplied decks
+    /// Initialise a game state with both players having drawn hands and supplied decks
     pub fn start(
-        player_one: (Vec<Card>, Vec<Card>, Vec<Card>),
-        player_two: (Vec<Card>, Vec<Card>, Vec<Card>),
+        player_one: (Vec<Card>, Vec<Card>, Vec<Card>, Vec<Card>),
+        player_two: (Vec<Card>, Vec<Card>, Vec<Card>, Vec<Card>),
     ) -> Self {
         GameState {
             player_one: Field {
@@ -191,7 +339,7 @@ impl GameState {
                 center_deck: player_one.1,
                 right_deck: player_one.2,
                 destroyed: [vec![], vec![], vec![], vec![], vec![], vec![], vec![]],
-                hand: vec![],
+                hand: player_one.3,
             },
             player_two: Field {
                 front: [None, None, None, None, None, None, None],
@@ -200,16 +348,133 @@ impl GameState {
                 center_deck: player_two.1,
                 right_deck: player_two.2,
                 destroyed: [vec![], vec![], vec![], vec![], vec![], vec![], vec![]],
-                hand: vec![],
+                hand: player_two.3,
             },
             active: Player::One,
-            open: Open,
+            open: Open {
+                phase: Phase::MayDraw,
+            },
         }
     }
 
     /// Returns which player has priority
     pub fn priority(&self) -> Player {
         self.active
+    }
+
+    pub fn open(&self) -> GameStateType {
+        self.open
+    }
+
+    pub fn priority_player(&self) -> &Field {
+        match self.priority() {
+            Player::One => &self.player_one,
+            Player::Two => &self.player_two,
+        }
+    }
+
+    fn priority_player_mut(&mut self) -> &mut Field {
+        match self.priority() {
+            Player::One => &mut self.player_one,
+            Player::Two => &mut self.player_two,
+        }
+    }
+
+    pub fn priority_player_options(&self) -> Vec<PlayerOption> {
+        let field = self.priority_player();
+        match self.open {
+            Open { phase: Phase::MayDraw } => {
+                let mut options = vec![ PlayerOption::SkipDraw ];
+                if field.has_cards_to_draw() {
+                    if field.has_cards_to_draw_left() {
+                        options.push(PlayerOption::Draw(FaceDownDeck::Left));
+                    }
+                    if field.has_cards_to_draw_right() {
+                        options.push(PlayerOption::Draw(FaceDownDeck::Right));
+                    }
+                }
+                options
+            }
+            Open { phase: Phase::MayTakeAction } => {
+                let mut options = vec![ PlayerOption::SkipAction ];
+                for card in field.cards_to_summon() {
+                    for slot in field.empty_slots() {
+                        options.push(PlayerOption::Action(Action {
+                            action_type: ActionType::Summon,
+                            instance: card,
+                            slot: Some(slot),
+                        }));
+                    }
+                }
+                for card in field.cards_to_attack() {
+                    options.push(PlayerOption::Action(Action {
+                        action_type: ActionType::Attack,
+                        instance: card,
+                        slot: None, // TODO
+                    }))
+                }
+                // TODO: Activating effects of cards summoned on the field
+                options
+            },
+            Closed => {
+                // TODO: Responding to effects
+                vec![]
+            }
+        }
+    }
+
+    pub fn priorty_player_take_option(&mut self, option: PlayerOption) -> Result<(), InvalidAction> {
+        if !self.priority_player_options().contains(&option) {
+            return Err(InvalidAction);
+        }
+        match option {
+            PlayerOption::SkipDraw => {
+                self.open = GameStateType::Open { phase: MayTakeAction };
+            },
+            PlayerOption::Draw(deck) => {
+                let player = self.priority_player_mut();
+                // move the card from deck to hand
+                match deck {
+                    FaceDownDeck::Left => {
+                        player.hand.push(player.left_deck.pop().ok_or(InvalidAction)?);
+                    }
+                    FaceDownDeck::Right => {
+                        player.hand.push(player.right_deck.pop().ok_or(InvalidAction)?);
+                    }
+                }
+                self.open = GameStateType::Open { phase: MayTakeAction };
+            },
+            PlayerOption::SkipAction => {
+                // immediately passes priority
+                self.active = self.active.next();
+                self.open = GameStateType::Open { phase: MayDraw };
+            },
+            PlayerOption::Action(action) => {
+                let player = self.priority_player_mut();
+                // passes priority but game state is now closed, other player may only respond
+                // to the action
+                match action.action_type {
+                    ActionType::Summon => {
+                        let slot = action.slot.ok_or(InvalidAction)?; //should this be defind on the summon subtype?
+                        let card_index = player
+                            .hand
+                            .iter()
+                            .position(|card| card.instance == action.instance)
+                            .ok_or(InvalidAction)?;
+                        if player.slot_is_empty(slot) {
+                            let card = player.hand.remove(card_index);
+                            player[slot] = Some(card);
+                        } else {
+                            return Err(InvalidAction);
+                        }
+                    }
+                    ActionType::Effect => (),
+                    ActionType::Attack => (),
+                }
+                self.open = GameStateType::Closed;
+            },
+        }
+        Ok(())
     }
 }
 
