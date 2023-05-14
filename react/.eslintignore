@@ -134,5 +134,4 @@ sketch
 # Configuration files
 .eslintrc.js
 postcss.config.js
-tailwind.config.js
 webpack.config.js

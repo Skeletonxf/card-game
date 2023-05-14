@@ -11,7 +11,7 @@ const Greeting = () => {
     /** The name of the user. */
     const userName = useAppSelector(selectUserName);
 
-    return <p className="text-3xl">{greeting(userName)}</p>;
+    return <p className="text">{greeting(userName)}</p>;
 };
 
 export default Greeting;

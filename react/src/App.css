@@ -2,3 +2,25 @@
     margin: 1rem;
     font-family: Arial, Helvetica, sans-serif;
 }
+
+.flex-row {
+    display: flex;
+    flex-direction: row;
+}
+
+.flex-column {
+    display: flex;
+    flex-direction: column;
+}
+
+.button {
+
+}
+
+.text-field {
+
+}
+
+.text {
+
+}

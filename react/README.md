@@ -19,7 +19,6 @@ The following tools are used to build the React app and improve the development 
 - [TypeScript](https://www.typescriptlang.org/)
 - [React](https://reactjs.org/)
 - [Redux](https://redux.js.org/)
-- [TailwindCSS](https://tailwindcss.com/)
 - [PostCSS](https://postcss.org/)
 - [Prettier](https://prettier.io/)
 - [ESLint](https://eslint.org/)

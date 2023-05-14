@@ -3,6 +3,7 @@ import React, { useMemo, useState } from "react";
 import { setUserName } from "../store/user/userSlice";
 import { selectUserName } from "../store/user/selectors";
 import { useAppDispatch, useAppSelector } from "../hooks/stateHooks";
+import Button from "./Button";
 
 /**
  * An input that allows the user to change their name.
@@ -42,22 +43,22 @@ const NameChange = () => {
     const handleNameChange = () => dispatch(setUserName(inputUserName));
 
     return (
-        <div className="flex flex-col mt-4">
+        <div className="flex-column">
             <p>Don&apos;t like the name {userName}? Change It!</p>
-            <div className="flex items-center gap-x-2 mt-3">
+            <div className="flex-row">
                 <input
                     onChange={handleInputChange}
                     value={inputUserName}
-                    className="border border-gray-400 rounded p-2"
+                    className="text-field"
                 />
                 <button
                     onClick={handleNameChange}
                     disabled={!canChangeName}
-                    className={`${canChangeName ? "bg-blue-500" : "bg-gray-400"
-                        } text-white py-2 px-4 rounded`}
+                    className="button"
                 >
                     Submit
                 </button>
+                <Button text="testing" onClick={() => alert('hello world')} />
             </div>
         </div>
     );

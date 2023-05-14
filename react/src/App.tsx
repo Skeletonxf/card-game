@@ -4,7 +4,6 @@ import Greeting from "./components/Greeting";
 import NameChange from "./components/NameChange";
 
 import "./App.css";
-import "tailwindcss/tailwind.css";
 
 const App = () => {
     return (

@@ -17,7 +17,6 @@ module.exports = (env) => {
     // For the fast refresh plugin we need to know if we're creating a development build or not.
     const isDevelopment = env.production ? false : true;
 
-    // Set the node env so that tailwind purges unused styles correctly on production.
     process.env.NODE_ENV = env.production ? "production" : "development";
 
     return {
