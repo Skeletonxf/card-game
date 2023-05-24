@@ -24,3 +24,21 @@
 .text {
 
 }
+
+.flex-center {
+    justify-content: center;
+}
+
+.grid {
+    display: grid;
+    grid-gap: 4px;
+}
+
+.cell {
+    background: lightgrey;
+    height: 48px;
+    width: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
